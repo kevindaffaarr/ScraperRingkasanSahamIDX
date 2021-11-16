@@ -1,0 +1,2 @@
+# download the chrome driver from https://sites.google.com/a/chromium.org/chromedriver/downloads and put it in the current directory
+chromedriver.exe
