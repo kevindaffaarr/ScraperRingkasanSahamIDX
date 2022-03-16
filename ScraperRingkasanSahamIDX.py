@@ -83,7 +83,7 @@ while i < maxTry:
 		# =================================================================================================
 		username = credentials["dbusername"]
 		password = credentials["dbpassword"]
-		# client = MongoClient("mongodb+srv://"+username+":"+password+"@idx20202024.voz3k.mongodb.net/data?retryWrites=true&w=majority")
+		# clientMongoExample = MongoClient("mongodb+srv://"+username+":"+password+"@idxdatabase.opd8z.mongodb.net/data?retryWrites=true&w=majority")
 		clientMongo = MongoClient("mongodb://"+username+":"+password+credentials["dbclient"])
 		db = clientMongo.data
 
