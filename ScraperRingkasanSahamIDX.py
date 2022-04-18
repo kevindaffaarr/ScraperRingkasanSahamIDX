@@ -4,7 +4,8 @@
 # MODULE IMPORT : BROWSER
 # =================================================================================================
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.edge.service import Service
+from webdriver_manager.microsoft import EdgeChromiumDriverManager
 
 # =================================================================================================
 # MODULE IMPORT : PYMONGO
@@ -21,13 +22,12 @@ from telethon.sync import TelegramClient
 # =================================================================================================
 import datetime, time
 import json
-import os
 import numpy as np
 
 # =================================================================================================
 # INITIATING CREDENTIALS
 # =================================================================================================
-with open("credentials.txt","r") as f:
+with open("credentials\credentials.json","r") as f:
 	credentials = json.load(f)
 
 # =================================================================================================
@@ -68,23 +68,13 @@ while i < maxTry:
 		i = i + 1
 		
 		# =================================================================================================
-		# INITIATE BROWSER DRIVER
-		# =================================================================================================
-		# Initiate a chrome options object so you can set the size and headless preference
-		chrome_options = Options()
-		#chrome_options.add_argument("--headless")
-		#chrome_options.add_argument("--window-size=1920x1080")
-
-		# download the chrome driver from https://sites.google.com/a/chromium.org/chromedriver/downloads and put it in the current directory
-		chrome_driver = os.getcwd() +"\\chromedriver.exe"
-
-		# =================================================================================================
 		# INITIATE DATABASE CONNECTION
 		# =================================================================================================
-		username = credentials["dbusername"]
-		password = credentials["dbpassword"]
+		dbusername = credentials["dbusername"]
+		dbpassword = credentials["dbpassword"]
+		dbaddress = credentials["dbaddress"]
 		# clientMongoExample = MongoClient("mongodb+srv://"+username+":"+password+"@idxdatabase.opd8z.mongodb.net/data?retryWrites=true&w=majority")
-		clientMongo = MongoClient("mongodb://"+username+":"+password+credentials["dbclient"])
+		clientMongo = MongoClient("mongodb://"+dbusername+":"+dbpassword+dbaddress)
 		db = clientMongo.data
 
 		# =================================================================================================
@@ -138,98 +128,108 @@ while i < maxTry:
 		# Looping startDate to endDate
 		scrapingStatus = False
 		while startDate <= endDate and startDate < datetime.date(2025,1,1):
-			driver = webdriver.Chrome(chrome_options=chrome_options, executable_path=chrome_driver)
-			scrapingStatus = True
-			print(startDate)
+			weekday = datetime.datetime.weekday(startDate)
+            if (weekday == 5) or (weekday == 6):
+                print(f"SCRAPING DATE: {startDate} - is a weekend")
+                startDate += datetime.timedelta(days=1)
+            else:
+                scrapingStatus = True
+                print(startDate)
+                
+                # =================================================================================================
+                # INITIATE BROWSER DRIVER
+                # =================================================================================================
+                driver = webdriver.Edge(service=Service(EdgeChromiumDriverManager().install()))
+                
+                # =================================================================================================
+                # Scrape IDX API : GetStockSummary
+                # =================================================================================================
+                # go to IDX page
+                yyyymmdd = startDate.strftime("%Y%m%d")
+                url = "https://www.idx.co.id/umbraco/Surface/TradingSummary/GetStockSummary?date="+str(yyyymmdd)+"&start=0&length=1"
+                driver.get(url)
 
-			# =================================================================================================
-			# Scrape IDX API : GetStockSummary
-			# =================================================================================================
-			# go to IDX page
-			yyyymmdd = startDate.strftime("%Y%m%d")
-			url = "https://www.idx.co.id/umbraco/Surface/TradingSummary/GetStockSummary?date="+str(yyyymmdd)+"&start=0&length=1"
-			driver.get(url)
+                browserResponse = driver.find_element_by_xpath("/html/body/pre").get_attribute("innerHTML")
+                browserResponse_json = json.loads(browserResponse)
 
-			browserResponse = driver.find_element_by_xpath("/html/body/pre").get_attribute("innerHTML")
-			browserResponse_json = json.loads(browserResponse)
+                if browserResponse_json['recordsTotal']>0:
+                    url = "https://www.idx.co.id/umbraco/Surface/TradingSummary/GetStockSummary?date="+str(yyyymmdd)+"&start=0&length="+str(browserResponse_json['recordsTotal'])
+                    driver.get(url)
 
-			if browserResponse_json['recordsTotal']>0:
-				url = "https://www.idx.co.id/umbraco/Surface/TradingSummary/GetStockSummary?date="+str(yyyymmdd)+"&start=0&length="+str(browserResponse_json['recordsTotal'])
-				driver.get(url)
+                    browserResponse = driver.find_element_by_xpath("/html/body/pre").get_attribute("innerHTML")
+                    browserResponse_json = json.loads(browserResponse)
 
-				browserResponse = driver.find_element_by_xpath("/html/body/pre").get_attribute("innerHTML")
-				browserResponse_json = json.loads(browserResponse)
+                # check date, does exist in database
+                dataDate = datetime.datetime.combine(startDate,datetime.time(0,0,0))
+                countQuery = db.idxStockRaw.count_documents({"date":dataDate})
+                status = False
+                if countQuery == 0:
+                    # insert_one({date, dataJson})
+                    browserResponse = browserResponse.replace("\"","\'")
+                    insertStatus = db.idxStockRaw.insert_one({"date":dataDate,"dataJson":browserResponse})
+                    status = insertStatus.acknowledged
+                else:
+                    # If record found, check does the new document recordsTotal > 0
+                    if browserResponse_json['recordsTotal']>0:
+                        query = db.idxStockRaw.find_one({"date":dataDate},{"_id":1,"dataJson":1})
+                        dataQuery = query["dataJson"]
+                        dataQuery = dataQuery.replace("\'","\"")
+                        dataQuery = json.loads(dataQuery)
+                        _idQuery = query["_id"]
 
-			# check date, does exist in database
-			dataDate = datetime.datetime.combine(startDate,datetime.time(0,0,0))
-			countQuery = db.idxStockRaw.find({"date":dataDate}).count()
-			status = False
-			if countQuery == 0:
-				# insert_one({date, dataJson})
-				browserResponse = browserResponse.replace("\"","\'")
-				insertStatus = db.idxStockRaw.insert_one({"date":dataDate,"dataJson":browserResponse})
-				status = insertStatus.acknowledged
-			else:
-				# If record found, check does the new document recordsTotal > 0
-				if browserResponse_json['recordsTotal']>0:
-					query = db.idxStockRaw.find_one({"date":dataDate},{"_id":1,"dataJson":1})
-					dataQuery = query["dataJson"]
-					dataQuery = dataQuery.replace("\'","\"")
-					dataQuery = json.loads(dataQuery)
-					_idQuery = query["_id"]
+                        # If recordsTotal of document from Query == 0 AND recordsTotal of new document > 0 then UPDATE
+                        if dataQuery["recordsTotal"] == 0:
+                            browserResponse = browserResponse.replace("\"","\'")
+                            insertStatus = db.idxStockRaw.update_one({"_id":_idQuery},{"$set": {"dataJson":browserResponse}})
+                            status = insertStatus.acknowledged
 
-					# If recordsTotal of document from Query == 0 AND recordsTotal of new document > 0 then UPDATE
-					if dataQuery["recordsTotal"] == 0:
-						browserResponse = browserResponse.replace("\"","\'")
-						insertStatus = db.idxStockRaw.update_one({"_id":_idQuery},{"$set": {"dataJson":browserResponse}})
-						status = insertStatus.acknowledged
+                print("StockSummary - Date: "+str(dataDate)+" Status: " + str(status))
 
-			print("StockSummary - Date: "+str(dataDate)+" Status: " + str(status))
+                # =================================================================================================
+                # Scrape IDX API : GetIndexSummary
+                # =================================================================================================
+                # go to IDX page
+                yyyymmdd = startDate.strftime("%Y%m%d")
+                url = "https://www.idx.co.id/umbraco/Surface/TradingSummary/GetIndexSummary?date="+str(yyyymmdd)+"&start=0&length=1"
+                driver.get(url)
 
-			# =================================================================================================
-			# Scrape IDX API : GetIndexSummary
-			# =================================================================================================
-			# go to IDX page
-			yyyymmdd = startDate.strftime("%Y%m%d")
-			url = "https://www.idx.co.id/umbraco/Surface/TradingSummary/GetIndexSummary?date="+str(yyyymmdd)+"&start=0&length=1"
-			driver.get(url)
+                browserResponse = driver.find_element_by_xpath("/html/body/pre").get_attribute('innerHTML')
+                browserResponse_json = json.loads(browserResponse)
 
-			browserResponse = driver.find_element_by_xpath("/html/body/pre").get_attribute('innerHTML')
-			browserResponse_json = json.loads(browserResponse)
+                if browserResponse_json['recordsTotal']>0:
+                    url = "https://www.idx.co.id/umbraco/Surface/TradingSummary/GetIndexSummary?date="+str(yyyymmdd)+"&start=0&length="+str(browserResponse_json['recordsTotal'])
+                    driver.get(url)
 
-			if browserResponse_json['recordsTotal']>0:
-				url = "https://www.idx.co.id/umbraco/Surface/TradingSummary/GetIndexSummary?date="+str(yyyymmdd)+"&start=0&length="+str(browserResponse_json['recordsTotal'])
-				driver.get(url)
+                    browserResponse = driver.find_element_by_xpath("/html/body/pre").get_attribute('innerHTML')
+                    browserResponse_json = json.loads(browserResponse)
 
-				browserResponse = driver.find_element_by_xpath("/html/body/pre").get_attribute('innerHTML')
-				browserResponse_json = json.loads(browserResponse)
+                # check date, does exist in database
+                dataDate = datetime.datetime.combine(startDate,datetime.time(0,0,0))
+                countQuery = db.idxIndexRaw.count_documents({"date":dataDate})
+                status = False
+                if countQuery == 0:
+                    # insert_one({date, dataJson})
+                    browserResponse = browserResponse.replace("\"","\'")
+                    insertStatus = db.idxIndexRaw.insert_one({"date":dataDate,"dataJson":browserResponse})
+                    status = insertStatus.acknowledged
+                else:
+                    # If record found, check does the new document recordsTotal > 0
+                    if browserResponse_json['recordsTotal']>0:
+                        query = db.idxIndexRaw.find_one({"date":dataDate},{"_id":1,"dataJson":1})
+                        dataQuery = query["dataJson"]
+                        dataQuery = dataQuery.replace("\'","\"")
+                        dataQuery = json.loads(dataQuery)
+                        _idQuery = query["_id"]
 
-			# check date, does exist in database
-			dataDate = datetime.datetime.combine(startDate,datetime.time(0,0,0))
-			countQuery = db.idxIndexRaw.find({"date":dataDate}).count()
-			status = False
-			if countQuery == 0:
-				# insert_one({date, dataJson})
-				browserResponse = browserResponse.replace("\"","\'")
-				insertStatus = db.idxIndexRaw.insert_one({"date":dataDate,"dataJson":browserResponse})
-				status = insertStatus.acknowledged
-			else:
-				# If record found, check does the new document recordsTotal > 0
-				if browserResponse_json['recordsTotal']>0:
-					query = db.idxIndexRaw.find_one({"date":dataDate},{"_id":1,"dataJson":1})
-					dataQuery = query["dataJson"]
-					dataQuery = dataQuery.replace("\'","\"")
-					dataQuery = json.loads(dataQuery)
-					_idQuery = query["_id"]
+                        # If recordsTotal of document from Query == 0 AND recordsTotal of new document > 0 then UPDATE
+                        if dataQuery["recordsTotal"] == 0:
+                            browserResponse = browserResponse.replace("\"","\'")
+                            insertStatus = db.idxIndexRaw.update_one({"_id":_idQuery},{"$set": {"dataJson":browserResponse}})
+                            status = insertStatus.acknowledged
+                print("IndexSummary - Date: "+str(dataDate)+" Status: " + str(status))
+                driver.quit()
 
-					# If recordsTotal of document from Query == 0 AND recordsTotal of new document > 0 then UPDATE
-					if dataQuery["recordsTotal"] == 0:
-						browserResponse = browserResponse.replace("\"","\'")
-						insertStatus = db.idxIndexRaw.update_one({"_id":_idQuery},{"$set": {"dataJson":browserResponse}})
-						status = insertStatus.acknowledged
-			print("IndexSummary - Date: "+str(dataDate)+" Status: " + str(status))
-
-			startDate += datetime.timedelta(days=1)
+                startDate += datetime.timedelta(days=1)
 			
 		if not scrapingStatus:
 			errorClass = np.append(errorClass,"Data already updated. No action executed!")
@@ -272,7 +272,7 @@ while i < maxTry:
 
 		api_id = credentials["telegram_api_id"]
 		api_hash = credentials["telegram_api_hash"]
-		session = 'scraperRawIdx20202024'
+		session = 'scraperRawIdx20202024Selenium'
 		phone = credentials["telegram_phone"]
 		targetUserID = credentials["telegram_targetUserID"]
 		bot_token = credentials["telegram_bot_token"]
